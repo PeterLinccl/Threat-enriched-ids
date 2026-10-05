@@ -1,0 +1,9 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+*.sqlite3
+tmp_main.err
+tmp_main.out
+logs/*.db
+*.sqlite
