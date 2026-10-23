@@ -5,5 +5,7 @@ __pycache__/
 *.sqlite3
 tmp_main.err
 tmp_main.out
-logs/*.db
+logs/
+*.db
 *.sqlite
+

@@ -2,11 +2,11 @@
 
 ## Project goal
 
-Suricata detects network events and writes them to its EVE JSON log. A Python service reads alert events, preserves the original alert, selects valid public IP addresses, avoids unnecessary repeat lookups, and checks cached reputation data. When the API clients are added, cache misses will be queried through AbuseIPDB and VirusTotal. The service will then produce a prioritized assessment with an explanation. Firewall blocking is an optional lab extension, not a requirement for the core pipeline.
+Suricata detects network events and writes them to its EVE JSON log. A Python service reads alert events, preserves the original alert, selects valid public IP addresses, avoids unnecessary repeat lookups, and checks cached reputation data. Cache misses can now be queried through AbuseIPDB and VirusTotal when API keys are configured. The service will later produce a prioritized assessment with an explanation. Firewall blocking is an optional lab extension, not a requirement for the core pipeline.
 
 ## Current implementation
 
-The parser, public-IP filtering, duplicate-lookup tracking, and SQLite TTL cache have working prototypes and recorded local checks below. The external API clients, threat scoring, metrics, and live Suricata integration are future work. Therefore, the current program should not yet be described as querying the reputation providers or producing final threat priorities.
+The parser, public-IP filtering, duplicate-lookup tracking, SQLite TTL cache, and asynchronous API clients have working prototypes. API requests have been tested offline with simulated provider responses; live requests still require the user's own API keys. Threat scoring, metrics, and live Suricata integration are future work. The current program does not yet produce final threat priorities.
 
 ## Phase plan and completion checks
 
@@ -40,7 +40,7 @@ The parser, public-IP filtering, duplicate-lookup tracking, and SQLite TTL cache
 
 **Completion check:** Both providers return usable normalized data; one provider's failure does not stop the other; repeated alerts reuse cached results; and a failed request can be retried. Keep API keys outside source control using environment variables such as `ABUSEIPDB_API_KEY` and `VIRUSTOTAL_API_KEY`.
 
-**Status: Next.**
+**Status: Implemented and tested offline; live key-based validation remains.**
 
 ### Phase 5: Threat scoring
 
@@ -87,7 +87,9 @@ For the final evaluation, compare cold-cache and warm-cache runs, measure API lo
 - `src/ip_filter.py` - validation and selection of public IPs
 - `src/dedup.py` - recent-IP tracking to suppress repeated lookups
 - `src/cache.py` - SQLite TTL cache for provider results
+- `src/api_clients.py` - asynchronous AbuseIPDB and VirusTotal lookups
 - `tests/sample_eve.json` - sample EVE data for local validation
+- `tests/test_api_clients.py` - offline API, concurrency, and retry checks
 - `logs/eve.json` - intended path for a real or runtime EVE log
 
 ## Input and expected output
@@ -100,29 +102,45 @@ Current alert output is printed in a form similar to:
 ALERT src=1.2.3.4 sig=ET SCAN Potential SSH Scan
 ```
 
-Final reputation assessments and priority output will be added in the API and scoring phases.
+Lookup results are printed and cached, but threat priority output belongs to the scoring phase.
 
 ## Running the project
 
-Run the parser against the sample data from the project root:
+From the project root, install the HTTP client dependency into your activated virtual environment:
 
 ```powershell
-python .\src\main.py --log .\tests\sample_eve.json --from-start
+python -m pip install -r requirements.txt
 ```
+
+Preview the lookups without keys or external requests:
+
+```powershell
+python -m src.main --log tests/sample_eve.json --from-start --dry-run
+```
+
+To perform real lookups, set your own keys in the current PowerShell session and omit `--dry-run`:
+
+```powershell
+$env:ABUSEIPDB_API_KEY = "your-abuseipdb-key"
+$env:VIRUSTOTAL_API_KEY = "your-virustotal-key"
+python -m src.main --log tests/sample_eve.json --from-start
+```
+
+Do not commit API keys or paste them into issues or logs. If a key is missing, that provider is skipped; the other provider can still run. A successful result is cached for one hour. HTTP errors, rate limits, invalid responses, and timeouts are reported without caching and can be retried by a later alert. The service uses a ten-second request timeout. The old sample cache may contain manually inserted demonstration results; remove `data/reputation_cache.sqlite3` before a clean live run.
 
 Run against the real log path when that file contains events:
 
 ```powershell
-python .\src\main.py --log .\logs\eve.json --from-start
+python -m src.main --log logs/eve.json --from-start
 ```
 
-The package/module form is also supported:
+`--from-start` tells the monitor to process the existing contents from the beginning rather than only waiting for newly appended log lines. The process then waits for new lines; stop it with Ctrl+C. Without `--from-start`, it waits for newly appended lines immediately.
+
+Run the offline checks without API keys:
 
 ```powershell
-python -m src.main --log .\tests\sample_eve.json --from-start
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
-
-`--from-start` tells the monitor to process the existing contents from the beginning rather than only waiting for newly appended log lines.
 
 ## Local validation results
 
@@ -196,16 +214,16 @@ Result: public IP filtering and cache storage/expiry work together as expected.
 Command:
 
 ```powershell
-python -m src.main --log tests/dedup_demo.json --from-start
+python -m src.main --log tests/dedup_demo.json --from-start --dry-run
 ```
 
 Observed lookup behavior:
 
 ```text
-CACHE HIT
 CACHE MISS
 NEW lookup needed
 DUPLICATE lookup
 ```
 
-Result: cached IPs are reused, uncached IPs are identified for lookup, and a repeated IP is recognized as a duplicate without dropping its alert.
+Result: uncached IP/provider pairs are identified for lookup and a repeated pair is recognized as a duplicate without dropping its alert. If the local cache already holds a result, it is shown as `CACHE HIT` instead.
+
