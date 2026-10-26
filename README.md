@@ -1,128 +1,157 @@
 # Threat-Enriched IDS: Project Workflow
 
-## Project goal
+## Our project goal
 
-Suricata detects network events and writes them to its EVE JSON log. A Python service reads alert events, preserves the original alert, selects valid public IP addresses, avoids unnecessary repeat lookups, and checks cached reputation data. When the API clients are added, cache misses will be queried through AbuseIPDB and VirusTotal. The service will then produce a prioritized assessment with an explanation. Firewall blocking is an optional lab extension, not a requirement for the core pipeline.
+We are building a service that reads Suricata EVE JSON alerts and enriches public IP addresses with reputation data. We filter invalid and non-public IPs, avoid unnecessary repeated lookups, and use a SQLite cache. When a result is not cached, we query AbuseIPDB and VirusTotal. Next, we will combine the alert and reputation results into a threat priority with an explanation. Firewall blocking is an optional lab extension.
 
-## Current implementation
+## What we have built
 
-The parser, public-IP filtering, duplicate-lookup tracking, and SQLite TTL cache have working prototypes and recorded local checks below. The external API clients, threat scoring, metrics, and live Suricata integration are future work. Therefore, the current program should not yet be described as querying the reputation providers or producing final threat priorities.
+We have implemented the alert parser, public-IP filtering, lookup deduplication, SQLite TTL cache, and asynchronous AbuseIPDB and VirusTotal clients. Three offline tests passed, and both providers returned results during live checks with our sample alerts. We have not yet implemented threat scoring, logging and metrics, or integration with a real Suricata log.
 
 ## Phase plan and completion checks
 
 ### Phase 1: Alert parser
 
-**Work:** Read EVE log lines individually, parse each line as JSON, and keep events whose `event_type` is `alert`. Extract the timestamp, source and destination IPs, alert signature, and severity for downstream processing.
+**Work:** We read EVE log lines individually, parse each line as JSON, and keep events whose `event_type` is `alert`. We extract the timestamp, source and destination IPs, alert signature, and severity for later processing.
 
-**Completion check:** The sample EVE file produces two alert records, and its DNS event is ignored. The parser can process the sample from the beginning of the file.
+**Completion check:** Our sample EVE file produces two alert records, while its DNS event is ignored. We can process the sample from the beginning of the file.
 
 **Status: Done.**
 
 ### Phase 2: IP filtering and deduplication
 
-**Work:** Validate both source and destination IPs. Only valid public addresses are candidates for external reputation lookup; private, reserved, or malformed addresses must not be sent to providers. Track whether a public IP was recently looked up so repeated alerts do not trigger redundant requests. Deduplication applies to lookups, not alerts: every alert remains available for reporting and scoring.
+**Work:** We validate both source and destination IPs. We only consider valid public addresses for external reputation lookups. We track recent lookups so repeated alerts do not trigger unnecessary requests. We still display every alert, including repeated ones.
 
-**Completion check:** Public addresses are accepted, private and invalid addresses are rejected, and a repeated IP is identified without dropping its alert.
+**Completion check:** We accept public addresses, reject private and invalid addresses, and identify repeated lookup attempts without dropping their alerts.
 
 **Status: Prototype done.**
 
 ### Phase 3: SQLite cache
 
-**Work:** Store provider results using the IP and provider as the record key, with an expiration time (TTL). Query the cache before making a provider request. A valid cached result is a hit; a missing or expired result is a miss. Cache data must remain available across program restarts.
+**Work:** We store provider results using the IP and provider as the record key, with an expiration time (TTL). We check the cache before making a provider request. A valid result is a cache hit; a missing or expired result is a cache miss. Cache data remains available across program restarts.
 
-**Completion check:** A stored result can be read back, remains available after reopening the cache, and becomes a miss after its TTL expires. The main workflow can distinguish cache hits from misses.
+**Completion check:** We can read a stored result after reopening the cache, and the result becomes a miss after its TTL expires. Our main workflow distinguishes cache hits from misses.
 
 **Status: Prototype done.**
 
 ### Phase 4: Asynchronous API clients
 
-**Work:** Implement separate clients for AbuseIPDB and VirusTotal using the agreed interface and normalized result format. Query both providers concurrently when their results are not cached. Handle network timeouts, provider errors, and rate limits independently so one provider failing does not block the other. Cache only successful, usable responses. Allow a failed lookup to be retried instead of marking it as successfully deduplicated.
+**Work:** We query AbuseIPDB and VirusTotal for uncached public IPs. For each alert, we run eligible provider requests concurrently and normalize their responses. We handle failures independently: a successful response is cached, while a failed lookup can be retried on a later alert. We keep API keys outside the source code.
 
-**Completion check:** Both providers return usable normalized data; one provider's failure does not stop the other; repeated alerts reuse cached results; and a failed request can be retried. Keep API keys outside source control using environment variables such as `ABUSEIPDB_API_KEY` and `VIRUSTOTAL_API_KEY`.
+**Completion check:** Both providers return usable results; one provider's failure does not stop the other; repeated alerts reuse cached results; and failed requests can be retried.
 
-**Status: Next.**
+**Status: Done. Three offline tests and live API lookups with sample alerts passed.**
 
 ### Phase 5: Threat scoring
 
-**Work:** Combine the IDS alert severity with whatever provider intelligence is available. Define clear rules for Low, Medium, and High priority and include a human-readable reason. Treat missing or failed provider data as unknown, not as evidence that an IP is safe.
+**Work:** We will combine IDS alert severity with the provider data that is available. We will define Low, Medium, and High priority rules and include a readable reason. We will treat missing or failed provider data as unknown rather than as evidence that an IP is safe.
 
-**Completion check:** The same input evidence always produces the same priority and explanation; missing data is represented explicitly.
+**Completion check:** The same evidence produces the same priority and explanation, and missing data is represented explicitly.
 
 **Status: Pending.**
 
 ### Phase 6: Logging and metrics
 
-**Work:** Save assessment records and collect alert count, filtered IP count, duplicate lookups, cache hits and misses, API errors, and processing time. Keep enough information to reproduce and discuss an evaluation run.
+**Work:** We will save assessment records and measure alert count, filtered IP count, duplicate lookups, cache hits and misses, API errors, and processing time.
 
-**Completion check:** Results and measurements can be exported or summarized for the evaluation report, and the measurements distinguish cold-cache from warm-cache runs.
+**Completion check:** We can export or summarize the results for our evaluation report and compare cold-cache with warm-cache runs.
 
 **Status: Pending.**
 
 ### Phase 7: Optional firewall blocking
 
-**Work:** In an isolated Ubuntu lab, test proposed `iptables` actions only after the core enrichment workflow is stable. Start in a log-only or dry-run mode; do not automatically block traffic during early testing.
+**Work:** If time permits, we will test proposed `iptables` actions in an isolated Ubuntu lab after the core enrichment workflow is stable. We will begin in a log-only or dry-run mode.
 
-**Completion check:** Each proposed action is recorded with its reason and can be reviewed. This phase is optional and should not delay the core system.
+**Completion check:** Each proposed action has a recorded reason and can be reviewed. This phase is optional.
 
 **Status: Optional.**
 
 ### Phase 8: Real Suricata integration
 
-**Work:** Run the Python service in an environment where it can read Suricata's actual EVE log on the Ubuntu VM. Generate controlled test traffic that produces known alerts and verify the full path.
+**Work:** We will run our Python service where it can read a real Suricata EVE log. We will generate controlled traffic that produces known alerts and verify the complete workflow.
 
-**Completion check:** Controlled traffic produces a Suricata alert, the Python service enriches it, and a prioritized result is visible end to end.
+**Completion check:** Controlled traffic produces a Suricata alert, our service enriches it, and we can see a prioritized result end to end.
 
 **Status: Pending.**
 
-## Recommended order and evaluation
+## Our next steps and evaluation
 
-Finish Phase 4 first, then implement scoring and metrics, and then connect the service to real Suricata. Work on firewall blocking only after the core system runs reliably. The project proposal names both team members but does not assign phases to you or Caleb; agree on ownership before splitting Phase 4 and Suricata integration.
+We will implement threat scoring, then logging and metrics, and then connect the service to a real Suricata log. Firewall blocking remains optional. My teammate and I will coordinate ownership of the remaining implementation and evaluation work.
 
-For the final evaluation, compare cold-cache and warm-cache runs, measure API lookup and total processing time, and use independently labeled cases to evaluate prioritization and false positives. The final deliverables are the code, evaluation report, and presentation.
+For the final evaluation, we plan to compare cold-cache and warm-cache runs, measure API lookup and total processing time, and use independently labeled cases to evaluate prioritization and false positives. Our final deliverables are the code, evaluation report, and presentation.
 
 ## Project structure
 
-- `src/main.py` - command-line entry point and monitoring workflow
-- `src/parser.py` - EVE JSON line parsing and alert extraction
-- `src/ip_filter.py` - validation and selection of public IPs
-- `src/dedup.py` - recent-IP tracking to suppress repeated lookups
-- `src/cache.py` - SQLite TTL cache for provider results
-- `tests/sample_eve.json` - sample EVE data for local validation
-- `logs/eve.json` - intended path for a real or runtime EVE log
+- `src/main.py` — command-line entry point and monitoring workflow
+- `src/parser.py` — EVE JSON line parsing and alert extraction
+- `src/ip_filter.py` — validation and selection of public IPs
+- `src/dedup.py` — recent lookup tracking
+- `src/cache.py` — SQLite TTL cache for provider results
+- `src/api_clients.py` — asynchronous AbuseIPDB and VirusTotal requests
+- `requirements.txt` — Python dependencies
+- `tests/sample_eve.json` — sample EVE data for local validation
+- `tests/dedup_demo.json` — repeated alerts for the deduplication demo
+- `tests/test_api_clients.py` — offline tests for both API clients
+- `tests/test_pipeline.py` — offline cache and failed-lookup retry test
+- `logs/eve.json` — planned path for a real or runtime EVE log
 
-## Input and expected output
+## Input and current output
 
-The sample input is `tests/sample_eve.json`. It includes alert entries and a non-alert DNS event to check that the parser only processes alerts. `logs/eve.json` is the intended input path when demonstrating with a real or runtime log; sample validation does not require a live Suricata installation.
+We use `tests/sample_eve.json` for local checks. It contains two alert events and one DNS event; we ignore the DNS event. We will use `logs/eve.json` when a real or runtime EVE log is available.
 
-Current alert output is printed in a form similar to:
+Our current output shows each alert, cache hits and misses, and successful or failed provider lookups. For example:
 
 ```text
 ALERT src=1.2.3.4 sig=ET SCAN Potential SSH Scan
+  CACHE HIT: 1.2.3.4 / abuseipdb
+  CACHE MISS: 1.2.3.4 / virustotal
+  LOOKUP OK: 1.2.3.4 / virustotal
 ```
 
-Final reputation assessments and priority output will be added in the API and scoring phases.
+The cache status depends on earlier runs. We will add the final threat priority and explanation in Phase 5.
 
-## Running the project
+## Running our project
 
-Run the parser against the sample data from the project root:
+We run commands from the project root with the virtual environment activated. First, we install the dependencies:
 
 ```powershell
-python .\src\main.py --log .\tests\sample_eve.json --from-start
+python -m pip install -r requirements.txt
 ```
 
-Run against the real log path when that file contains events:
+We create a local `.env` file in the project root and replace these examples with our own API keys:
+
+```text
+ABUSEIPDB_API_KEY=your-own-key
+VIRUSTOTAL_API_KEY=your-own-key
+```
+
+Git ignores `.env`. We do not put real keys in source files or this README.
+
+To preview lookup decisions without sending API requests, we run:
 
 ```powershell
-python .\src\main.py --log .\logs\eve.json --from-start
+python -m src.main --log tests/dedup_demo.json --from-start --dry-run
 ```
 
-The package/module form is also supported:
+To process sample alerts and query providers when results are not cached, we run:
 
 ```powershell
-python -m src.main --log .\tests\sample_eve.json --from-start
+python -m src.main --log tests/sample_eve.json --from-start
 ```
 
-`--from-start` tells the monitor to process the existing contents from the beginning rather than only waiting for newly appended log lines.
+When a real Suricata EVE log is available at the planned location, we will run:
+
+```powershell
+python -m src.main --log logs/eve.json
+```
+
+`--from-start` processes existing log lines before waiting for new ones. Without it, our program waits for newly added lines. We press Ctrl+C to stop it. A cached result appears as `CACHE HIT` and does not trigger another API request.
+
+We run the offline tests with:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
 
 ## Local validation results
 
@@ -131,10 +160,10 @@ python -m src.main --log .\tests\sample_eve.json --from-start
 Command:
 
 ```powershell
-python -m src.main --log tests/sample_eve.json --from-start
+python -m src.main --log tests/sample_eve.json --from-start --dry-run
 ```
 
-Result: starts without relative-import errors; the sample contains two alert events and a DNS event that is skipped.
+Result: our program starts without relative-import errors. It processes two alert events and skips the DNS event. Dry-run mode does not send API requests.
 
 ### Public IP filtering
 
@@ -152,7 +181,7 @@ None
 None
 ```
 
-Result: public IP accepted; private and invalid values rejected.
+Result: we accept the public IP and reject the private and invalid values.
 
 ### SQLite cache hit and expiry
 
@@ -169,7 +198,7 @@ immediate: {'score': 42}
 after expiry: None
 ```
 
-Result: the cached value is available before expiry and returns a miss after its TTL.
+Result: we can retrieve the cached value before expiry; after expiry, we get a cache miss.
 
 ### Combined Phase 2 and Phase 3 validation
 
@@ -189,23 +218,26 @@ None
 None
 ```
 
-Result: public IP filtering and cache storage/expiry work together as expected.
+Result: public IP filtering and cache storage and expiry work together as expected.
 
 ### Deduplication demo
 
 Command:
 
 ```powershell
-python -m src.main --log tests/dedup_demo.json --from-start
+python -m src.main --log tests/dedup_demo.json --from-start --dry-run
 ```
 
-Observed lookup behavior:
+Result: for an uncached IP/provider pair, the first alert shows `NEW lookup needed` and the repeated alert shows `DUPLICATE lookup`. If we already have a cached result, our program shows `CACHE HIT` instead. We still see both alerts.
 
-```text
-CACHE HIT
-CACHE MISS
-NEW lookup needed
-DUPLICATE lookup
+### Phase 4: API clients and pipeline
+
+Command:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Result: cached IPs are reused, uncached IPs are identified for lookup, and a repeated IP is recognized as a duplicate without dropping its alert.
+Result: all three offline tests passed. We tested both provider response formats and verified that a failed provider can be retried without repeating a successful lookup.
+
+We also ran `tests/sample_eve.json` with our locally configured API keys. AbuseIPDB and VirusTotal returned usable results for `1.2.3.4` and `8.8.8.8`. Later runs showed cache hits. Provider reputation values can change, so we do not treat the observed values as fixed expected results. We have not yet tested this workflow against a real Suricata log.
