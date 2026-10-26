@@ -19,3 +19,7 @@ class RecentIPTracker:
         # Allow a new lookup after the window expires.
         self.last_seen[ip] = now
         return True
+
+    def forget(self, key):
+        """Remove a failed lookup so the next alert can retry it."""
+        self.last_seen.pop(key, None)

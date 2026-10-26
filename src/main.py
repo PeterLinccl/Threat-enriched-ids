@@ -1,10 +1,15 @@
 import asyncio
 import argparse
-
+from dotenv import load_dotenv
 from .parser import tail_file, parse_alert
 from .ip_filter import get_public_ip
 from .dedup import RecentIPTracker
 from .cache import ReputationCache
+
+import os
+import aiohttp
+
+from .api_clients import lookup_abuseipdb, lookup_virustotal
 
 
 async def main():
@@ -12,11 +17,27 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--log", default="tests/sample_eve.json")
     parser.add_argument("--from-start", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     tracker = RecentIPTracker(window_seconds=60)
     cache = ReputationCache()
     providers = ("abuseipdb", "virustotal")
+    
+    load_dotenv()
+    api_keys = {
+    "abuseipdb": os.getenv("ABUSEIPDB_API_KEY"),
+    "virustotal": os.getenv("VIRUSTOTAL_API_KEY"),
+    }
+
+    lookup_functions = {
+    "abuseipdb": lookup_abuseipdb,
+    "virustotal": lookup_virustotal,
+    }
+
+    session = aiohttp.ClientSession(
+    timeout=aiohttp.ClientTimeout(total=10)
+    )
 
     try:
         async for line in tail_file(args.log, args.from_start):
@@ -32,28 +53,58 @@ async def main():
                 ip = get_public_ip(alert.get(field))
                 if ip and ip not in candidate_ips:
                     candidate_ips.append(ip)
-
+            pending = []
             for ip in candidate_ips:
-                missing_providers = []
-
-                # Cache entries are separate for each IP and provider.
                 for provider in providers:
                     result = cache.get(ip, provider)
-                    if result is None:
-                        print(f"  CACHE MISS: {ip} / {provider}")
-                        missing_providers.append(provider)
-                    else:
+
+                    if result is not None:
                         print(f"  CACHE HIT: {ip} / {provider}")
+                        continue
 
-                # For now, only report which API lookups would be needed.
-                if missing_providers:
-                    if tracker.should_lookup(ip):
-                        print(f"  NEW lookup needed: {ip} / {missing_providers}")
+                    print(f"  CACHE MISS: {ip} / {provider}")
+                    key = (ip, provider)
+
+                    if args.dry_run:
+                        if tracker.should_lookup(key):
+                            print(f"  NEW lookup needed: {ip} / {provider}")
+                        else:
+                            print(f"  DUPLICATE lookup: {ip} / {provider}")
+                        continue
+
+                    if not api_keys[provider]:
+                        print(f"  SKIPPED: missing {provider} API key")
+                        continue
+
+                        
+                    if not tracker.should_lookup(key):
+                        print(f"  DUPLICATE lookup: {ip} / {provider}")
+                        continue
+
+                    pending.append(
+                        (ip, provider, lookup_functions[provider](
+                            session, ip, api_keys[provider]
+                        ))
+                    )
+                    
+            if pending:
+                results = await asyncio.gather(
+                    *(job[2] for job in pending),
+                    return_exceptions=True,
+                )
+
+                for (ip, provider, _), result in zip(pending, results):
+                    if isinstance(result, BaseException):
+                        tracker.forget((ip, provider))
+                        if isinstance(result, asyncio.CancelledError):
+                            raise result
+                        print(f"  LOOKUP FAILED: {ip} / {provider} ({result})")
                     else:
-                        print(f"  DUPLICATE lookup: {ip}")
-
+                        cache.put(ip, provider, result)
+                        print(f"  LOOKUP OK: {ip} / {provider} {result}")
     finally:
         # Close the database when the program stops.
+        await session.close()
         cache.close()
 
 
